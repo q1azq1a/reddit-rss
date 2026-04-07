@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log"
@@ -16,6 +17,16 @@ import (
 	"github.com/victorspringer/http-cache/adapter/redis"
 	"golang.org/x/oauth2"
 )
+
+// uaTransport sets User-Agent on every outgoing request.
+type uaTransport struct {
+	userAgent string
+}
+
+func (t *uaTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("User-Agent", t.userAgent)
+	return http.DefaultTransport.RoundTrip(req)
+}
 
 func main() {
 	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
@@ -41,6 +52,10 @@ func main() {
 		httpClient := http.DefaultClient
 		var token *oauth2.Token
 		baseApiUrl := "https://www.reddit.com"
+		userAgent := os.Getenv("USER_AGENT")
+		if userAgent == "" {
+			userAgent = "reddit-rss 1.0"
+		}
 		oauthClientID := os.Getenv("OAUTH_CLIENT_ID")
 		if oauthClientID != "" {
 			oauthClientSecret := os.Getenv("OAUTH_CLIENT_SECRET")
@@ -52,19 +67,21 @@ func main() {
 					AuthStyle: oauth2.AuthStyleInHeader,
 				},
 			}
+			// Use a custom HTTP client that sends the User-Agent on the token request.
+			// Reddit rejects token requests without a proper User-Agent.
+			uaClient := &http.Client{
+				Transport: &uaTransport{userAgent: userAgent},
+			}
+			ctx := context.WithValue(r.Context(), oauth2.HTTPClient, uaClient)
 			// login with reddit user password
 			username := os.Getenv("REDDIT_USERNAME")
 			password := os.Getenv("REDDIT_PASSWORD")
-			token, err = oauthCfg.PasswordCredentialsToken(r.Context(), username, password)
+			token, err = oauthCfg.PasswordCredentialsToken(ctx, username, password)
 			if err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}
 			baseApiUrl = "https://oauth.reddit.com"
-		}
-		userAgent := os.Getenv("USER_AGENT")
-		if userAgent == "" {
-			userAgent = "reddit-rss 1.0"
 		}
 		redditClient := &client.RedditClient{
 			HttpClient: httpClient,
